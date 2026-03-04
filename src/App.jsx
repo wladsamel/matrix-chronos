@@ -521,10 +521,10 @@ function App() {
     })
   }
 
-  // ── VOICE MODULE — 3-Tier Smart Waterfall ──
-  // Tier 1: Native browser premium voice (Edge Online / Google pt-BR) — best quality, no cost
-  // Tier 2: HuggingFace via /api/tts Vercel proxy — great quality, works on any device
-  // Tier 3: Gemini 2.5 TTS via /api/gemini-tts — always available fallback
+  // ── VOICE MODULE — 2-Tier API Waterfall + basic fallback ──
+  // Tier 1: HuggingFace via /api/tts Vercel proxy (best free quality, all devices)
+  // Tier 2: Gemini 2.5 TTS via /api/gemini-tts (reliable fallback)
+  // Tier 3: Native browser voice (emergency only, low quality)
   const speak = async (text, force = false) => {
     if (!isVoiceEnabled && !force) return;
     if (window.speechSynthesis) window.speechSynthesis.cancel();
@@ -538,34 +538,13 @@ function App() {
       .trim();
     if (!cleanText) return;
 
-    // Helper: play an audio blob/URL
+    // Helper: play a blob URL
     const playUrl = (url) => new Promise((resolve, reject) => {
       const audio = new Audio(url);
       audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
       audio.onerror = reject;
       audio.play().catch(reject);
     });
-
-    // ── TIER 1: Native browser premium voice ──
-    // Check for Edge Online voices or Google neural voices — they are the highest quality
-    if (window.speechSynthesis) {
-      const voices = window.speechSynthesis.getVoices();
-      const premiumVoice = voices.find(v =>
-        v.name.includes('Online') ||
-        v.name.includes('Natural') ||
-        (v.name.startsWith('Google') && v.lang.startsWith('pt'))
-      );
-      if (premiumVoice) {
-        console.log(`[TTS] Tier 1 — Voz nativa premium: ${premiumVoice.name}`);
-        setVoiceTier('native');
-        const u = new SpeechSynthesisUtterance(cleanText);
-        u.voice = premiumVoice;
-        u.lang = premiumVoice.lang;
-        u.rate = 1.02;
-        window.speechSynthesis.speak(u);
-        return;
-      }
-    }
 
     // ── TIER 2: HuggingFace via Vercel serverless proxy ──
     // Only available when deployed (not localhost), because the /api route needs Vercel
