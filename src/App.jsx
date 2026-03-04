@@ -280,28 +280,16 @@ function App() {
   const [isVoiceEnabled, setIsVoiceEnabled] = useState(() => {
     try { return localStorage.getItem('mc_voice_enabled') === 'true' } catch { return false }
   })
-  const [availableVoices, setAvailableVoices] = useState([])
   const [selectedVoiceURI, setSelectedVoiceURI] = useState(() => {
-    try { return localStorage.getItem('mc_selected_voice') || null } catch { return null }
+    try { return localStorage.getItem('mc_selected_voice') || 'female-pt' } catch { return 'female-pt' }
   })
-
-  // Load voices securely
-  useEffect(() => {
-    const loadVoices = () => {
-      const v = window.speechSynthesis.getVoices()
-      if (v.length > 0) {
-        setAvailableVoices(v)
-      }
-    }
-    loadVoices()
-    if (window.speechSynthesis) {
-      window.speechSynthesis.onvoiceschanged = loadVoices
-    }
-  }, [])
+  // Which TTS engine is currently active: 'native' | 'hf' | 'gemini' | 'none'
+  const [voiceTier, setVoiceTier] = useState('none')
 
   useEffect(() => { localStorage.setItem('mc_oracle_chat', JSON.stringify(messages)) }, [messages])
   useEffect(() => { localStorage.setItem('mc_voice_enabled', isVoiceEnabled) }, [isVoiceEnabled])
   useEffect(() => { if (selectedVoiceURI) localStorage.setItem('mc_selected_voice', selectedVoiceURI) }, [selectedVoiceURI])
+
 
   // ── COLOR CATEGORIES ──
   const defaultCats = [
@@ -533,56 +521,151 @@ function App() {
     })
   }
 
-  // ── VOICE MODULE ──
-  const speak = (text, force = false) => {
-    if ((!isVoiceEnabled && !force) || !window.speechSynthesis) return;
+  // ── VOICE MODULE — 3-Tier Smart Waterfall ──
+  // Tier 1: Native browser premium voice (Edge Online / Google pt-BR) — best quality, no cost
+  // Tier 2: HuggingFace via /api/tts Vercel proxy — great quality, works on any device
+  // Tier 3: Gemini 2.5 TTS via /api/gemini-tts — always available fallback
+  const speak = async (text, force = false) => {
+    if (!isVoiceEnabled && !force) return;
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
 
-    // Stop ongoing speech
-    window.speechSynthesis.cancel();
+    // Clean text for TTS: remove emojis and markdown
+    const cleanText = text
+      .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+      .replace(/[\u{2600}-\u{27BF}]/gu, '')
+      .replace(/[*#`_~>]/g, '')
+      .slice(0, 600)
+      .trim();
+    if (!cleanText) return;
 
-    // Small delay to prevent Edge's silent failure bug with Online voices
-    setTimeout(() => {
-      // Remove emojis and simple markdown for better TTS reading
-      const cleanText = text.replace(/[\u{1F600}-\u{1F64F}]/gu, '').replace(/[\u{1F300}-\u{1F5FF}]/gu, '').replace(/[\u{1F680}-\u{1F6FF}]/gu, '').replace(/[\u{1F700}-\u{1F77F}]/gu, '').replace(/[\u{1F780}-\u{1F7FF}]/gu, '').replace(/[\u{1F800}-\u{1F8FF}]/gu, '').replace(/[\u{1F900}-\u{1F9FF}]/gu, '').replace(/[\u{1FA00}-\u{1FA6F}]/gu, '').replace(/[\u{2600}-\u{26FF}]/gu, '').replace(/[\u{2700}-\u{27BF}]/gu, '').replace(/[*#`]/g, '');
+    // Helper: play an audio blob/URL
+    const playUrl = (url) => new Promise((resolve, reject) => {
+      const audio = new Audio(url);
+      audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+      audio.onerror = reject;
+      audio.play().catch(reject);
+    });
 
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.rate = 1.05;
-      utterance.pitch = 1.0;
-
-      const setBestVoice = () => {
-        const voices = window.speechSynthesis.getVoices();
-
-        // If user selected a specific voice, use it
-        if (selectedVoiceURI) {
-          const userVoice = voices.find(v => v.voiceURI === selectedVoiceURI);
-          if (userVoice) {
-            utterance.voice = userVoice;
-            utterance.lang = userVoice.lang; // Use the exact lang of the voice
-            window.speechSynthesis.speak(utterance);
-            return;
-          }
-        }
-
-        utterance.lang = 'pt-BR';
-        // Default fallback logic
-        const ptVoices = voices.filter(v => v.lang.startsWith('pt'));
-        const premiumVoice = ptVoices.find(v => v.name.includes('Online') || v.name.includes('Natural') || v.name.includes('Google'));
-
-        if (premiumVoice) {
-          utterance.voice = premiumVoice;
-        } else if (ptVoices.length > 0) {
-          utterance.voice = ptVoices[0];
-        }
-        window.speechSynthesis.speak(utterance);
-      };
-
-      if (window.speechSynthesis.getVoices().length === 0) {
-        window.speechSynthesis.onvoiceschanged = setBestVoice;
-      } else {
-        setBestVoice();
+    // ── TIER 1: Native browser premium voice ──
+    // Check for Edge Online voices or Google neural voices — they are the highest quality
+    if (window.speechSynthesis) {
+      const voices = window.speechSynthesis.getVoices();
+      const premiumVoice = voices.find(v =>
+        v.name.includes('Online') ||
+        v.name.includes('Natural') ||
+        (v.name.startsWith('Google') && v.lang.startsWith('pt'))
+      );
+      if (premiumVoice) {
+        console.log(`[TTS] Tier 1 — Voz nativa premium: ${premiumVoice.name}`);
+        setVoiceTier('native');
+        const u = new SpeechSynthesisUtterance(cleanText);
+        u.voice = premiumVoice;
+        u.lang = premiumVoice.lang;
+        u.rate = 1.02;
+        window.speechSynthesis.speak(u);
+        return;
       }
-    }, 50);
+    }
+
+    // ── TIER 2: HuggingFace via Vercel serverless proxy ──
+    // Only available when deployed (not localhost), because the /api route needs Vercel
+    const isDeployed = !window.location.hostname.includes('localhost');
+    if (isDeployed) {
+      try {
+        console.log('[TTS] Tier 2 — HuggingFace via proxy /api/tts...');
+        setVoiceTier('hf');
+        const lang = selectedVoiceURI === 'en-aria' ? 'eng' : 'por';
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: cleanText, lang }),
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          await playUrl(url);
+          console.log('[TTS] Tier 2 — HuggingFace neural OK!');
+          return;
+        }
+        console.warn('[TTS] Tier 2 failed, status:', res.status, '— escalando para Tier 3');
+      } catch (e2) {
+        console.warn('[TTS] Tier 2 error:', e2.message, '— escalando para Tier 3');
+      }
+    }
+
+    // ── TIER 3: Gemini TTS via Vercel proxy (or direct if local) ──
+    try {
+      console.log('[TTS] Tier 3 — Gemini TTS...');
+      setVoiceTier('gemini');
+      const GEMINI_VOICES = { 'female-pt': 'Aoede', 'male-pt': 'Charon', 'en-aria': 'Puck' };
+      const voiceName = GEMINI_VOICES[selectedVoiceURI] || 'Aoede';
+
+      let audioUrl;
+      if (isDeployed) {
+        // Call server-side proxy (no CORS, no key exposure)
+        const res = await fetch('/api/gemini-tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: cleanText, voiceName }),
+        });
+        if (!res.ok) throw new Error(`Gemini proxy error: ${res.status}`);
+        const blob = await res.blob();
+        audioUrl = URL.createObjectURL(blob);
+      } else {
+        // Local dev: call Gemini API directly (no proxy needed locally)
+        const apiKey = (import.meta.env.VITE_GEMINI_API_KEY || '').trim();
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: cleanText }] }],
+              generationConfig: {
+                response_modalities: ['AUDIO'],
+                speech_config: { voice_config: { prebuilt_voice_config: { voice_name: voiceName } } }
+              }
+            })
+          }
+        );
+        if (!res.ok) throw new Error(`Gemini direct error: ${res.status}`);
+        const data = await res.json();
+        const b64 = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        const mime = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.mimeType || 'audio/pcm';
+        if (!b64) throw new Error('No audio data');
+        const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        let blob;
+        if (mime.includes('pcm') || mime.includes('L16')) {
+          const sr = 24000, ch = 1, bps = 16, pcml = bytes.length;
+          const wav = new ArrayBuffer(44 + pcml);
+          const v = new DataView(wav);
+          const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+          ws(0, 'RIFF'); v.setUint32(4, 36 + pcml, true); ws(8, 'WAVE'); ws(12, 'fmt ');
+          v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, ch, true);
+          v.setUint32(24, sr, true); v.setUint32(28, sr * ch * bps / 8, true);
+          v.setUint16(32, ch * bps / 8, true); v.setUint16(34, bps, true);
+          ws(36, 'data'); v.setUint32(40, pcml, true);
+          new Uint8Array(wav, 44).set(bytes);
+          blob = new Blob([wav], { type: 'audio/wav' });
+        } else { blob = new Blob([bytes], { type: mime }); }
+        audioUrl = URL.createObjectURL(blob);
+      }
+
+      await playUrl(audioUrl);
+      console.log('[TTS] Tier 3 — Gemini OK!');
+    } catch (e3) {
+      console.error('[TTS] Tier 3 failed:', e3.message, '— fallback para voz básica do sistema');
+      setVoiceTier('none');
+      if (window.speechSynthesis) {
+        const u = new SpeechSynthesisUtterance(cleanText);
+        u.lang = 'pt-BR';
+        window.speechSynthesis.speak(u);
+      }
+    }
   }
+
+
+
 
   const startListening = () => {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
@@ -1361,42 +1444,47 @@ function App() {
 
             {/* Módulo de Voz da Oráculo */}
             <section className="settings-section glass-card">
-              <h3>🎙️ Voz da Oráculo</h3>
-              <p className="settings-desc">Escolha a voz que a Oráculo usará para se comunicar com você. As vozes nativas do seu dispositivo estão disponíveis aqui.</p>
+              <h3>🎙️ Voz da Oráculo (HuggingFace Neural)</h3>
+              <p className="settings-desc">Conectada ao motor Neural gratuito da Meta (HuggingFace). A voz è gerada na nuvem e funciona em todos navegadores e dispositivos.</p>
 
               <div className="settings-row" style={{ marginTop: '15px' }}>
-                <label>Voz Selecionada</label>
+                <label>Tipo de Voz</label>
                 <select
                   className="voice-select"
-                  value={selectedVoiceURI || ""}
+                  value={selectedVoiceURI}
                   onChange={(e) => setSelectedVoiceURI(e.target.value)}
                   style={{ flex: 1, padding: '8px', borderRadius: '6px', background: 'rgba(255,255,255,0.05)', color: '#fff', border: '1px solid rgba(0,217,255,0.3)' }}
                 >
-                  <option value="" disabled>-- Selecione uma voz --</option>
-                  {availableVoices.length === 0 && <option value="" disabled>Carregando vozes do sistema...</option>}
-                  {availableVoices.filter(v => v.lang.startsWith('pt')).map(v => (
-                    <option key={v.voiceURI} value={v.voiceURI}>
-                      {v.name} ({v.lang})
-                    </option>
-                  ))}
-                  {availableVoices.filter(v => !v.lang.startsWith('pt')).length > 0 && (
-                    <optgroup label="Outros Idiomas">
-                      {availableVoices.filter(v => !v.lang.startsWith('pt')).map(v => (
-                        <option key={v.voiceURI} value={v.voiceURI}>
-                          {v.name} ({v.lang})
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
+                  <option value="female-pt">🌸 Oráculo — Português Feminina</option>
+                  <option value="male-pt">🔵 Arquiteto — Português Masculino</option>
+                  <option value="en-aria">🌐 Agent — English</option>
                 </select>
                 <button
-                  onClick={() => speak("Matrix Chronos. Teste de sistema de voz iniciado.")}
+                  onClick={() => speak("Sistemas neurais online. Matrix Chronos operacional.", true)}
                   style={{ padding: '8px 15px', background: 'rgba(0,217,255,0.2)', color: '#fff', border: '1px solid #00d9ff', borderRadius: '6px', cursor: 'pointer' }}
                 >
                   Testar Voz
                 </button>
               </div>
+
+              {/* Engine Status Badge */}
+              <div style={{ marginTop: '12px', padding: '8px 12px', borderRadius: '8px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+                <span style={{ fontSize: '16px' }}>
+                  {voiceTier === 'native' ? '⭐' : voiceTier === 'hf' ? '🟢' : voiceTier === 'gemini' ? '🟡' : '⚪'}
+                </span>
+                <div>
+                  <strong style={{ color: '#00d9ff' }}>Motor Ativo:</strong>{' '}
+                  <span style={{ color: '#ccc' }}>
+                    {voiceTier === 'native' && 'Voz Nativa Premium (Edge/Google) — Máxima qualidade'}
+                    {voiceTier === 'hf' && 'HuggingFace Neural (Vercel Proxy) — Alta qualidade'}
+                    {voiceTier === 'gemini' && 'Gemini TTS — Qualidade funcional'}
+                    {voiceTier === 'none' && 'Clique em "Testar Voz" para ativar'}
+                  </span>
+                </div>
+              </div>
             </section>
+
+
 
 
             {/* Customizar Eventos Existentes */}
