@@ -1,0 +1,93 @@
+:root {
+  --font-heading: 'Outfit', sans-serif;
+  --font-body: 'Inter', sans-serif;
+
+  /* Matrix Métodos — Vibrant Colorful Theme */
+  --bg-dark: #0a0a20;
+  /* Deep Midnight Blue, not black */
+  --bg-card: rgba(20, 20, 45, 0.6);
+  --accent-blue: #0088FF;
+  --accent-red: #FF0055;
+  --accent: #0088FF;
+  --accent-glow: rgba(0, 136, 255, 0.6);
+  --accent-red-glow: rgba(255, 0, 85, 0.5);
+  --text-primary: #ffffff;
+  --text-secondary: #c0c0e0;
+  --glass-bg: rgba(255, 255, 255, 0.05);
+  --glass-border: rgba(255, 255, 255, 0.12);
+
+  --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --bg-main: #0a0a20;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-dark);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  line-height: 1.6;
+  overflow-x: hidden;
+  /* Ultra-vibrant split background with pills-inspired aesthetic */
+  background-image:
+    radial-gradient(circle at 10% 20%, rgba(0, 136, 255, 0.25) 0%, transparent 40%),
+    radial-gradient(circle at 90% 80%, rgba(255, 0, 85, 0.2) 0%, transparent 40%),
+    radial-gradient(circle at 50% 50%, rgba(10, 10, 32, 0) 0%, var(--bg-dark) 100%),
+    linear-gradient(135deg, rgba(0, 136, 255, 0.08) 0%, rgba(255, 0, 85, 0.08) 100%),
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 100% 100%, 100% 100%, 50px 50px, 50px 50px;
+  background-attachment: fixed;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-heading);
+  letter-spacing: -0.02em;
+}
+
+.glass-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.8);
+}
+
+.matrix-glow {
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-red));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  filter: drop-shadow(0 0 8px var(--accent-glow));
+}
+
+button {
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-dark);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--glass-border);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-blue);
+}
