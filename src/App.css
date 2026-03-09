@@ -1336,8 +1336,7 @@
   align-items: center;
 }
 
-.add-form input,
-.add-form select {
+.add-form input {
   flex: 1;
   min-width: 120px;
   background: rgba(255, 255, 255, 0.05);
@@ -1350,14 +1349,35 @@
   outline: none;
 }
 
-.add-form input:focus,
-.add-form select:focus {
+.add-form input:focus {
   border-color: var(--accent);
 }
 
-.add-form select option {
-  background: #111;
-  color: white;
+/* ── Category Pills ── */
+.category-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+.cat-pill {
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.cat-pill:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.cat-pill.active {
+  transform: scale(1.05);
 }
 
 .add-form button {
@@ -1409,11 +1429,6 @@
   height: 32px;
   border-radius: 4px;
   flex-shrink: 0;
-}
-
-.task-type-dot.work {
-  background: #3498db;
-  box-shadow: 0 0 6px rgba(52, 152, 219, 0.5);
 }
 
 .task-row {

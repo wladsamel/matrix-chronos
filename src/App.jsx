@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { chatWithOracle } from './gemini'
+import { supabase } from './supabaseClient'
 import './App.css'
 import copaLogo from './assets/copa2026.png'
 import championsLogo from './assets/champions.png'
@@ -234,15 +235,47 @@ function App() {
   const [selectedEvent, setSelectedEvent] = useState(null)
   const [selectedDay, setSelectedDay] = useState(null)
   const [favoriteIds, setFavoriteIds] = useState(['copa2026', 'natal2026', 'champions2026'])
+  const [userPreferences, setUserPreferences] = useState({})
   const [isThinking, setIsThinking] = useState(false)
 
+  // ── SECURITY & LOCKSCREEN ──
+  const [isUnlocked, setIsUnlocked] = useState(() => !!localStorage.getItem('matrix_master_key'))
+  const [masterKeyInput, setMasterKeyInput] = useState('')
+  const [keyError, setKeyError] = useState('')
+
+  const handleUnlock = async (e) => {
+    e.preventDefault()
+    setKeyError('')
+    try {
+      const res = await fetch('/api/verify-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: masterKeyInput })
+      })
+      if (res.ok) {
+        localStorage.setItem('matrix_master_key', masterKeyInput)
+        setIsUnlocked(true)
+      } else if (res.status === 404 && window.location.hostname.includes('localhost')) {
+        // Fallback dev: permite desbloquear em localhost sem vercel dev
+        localStorage.setItem('matrix_master_key', masterKeyInput)
+        setIsUnlocked(true)
+      } else {
+        setKeyError('Acesso Negado. Chave incorreta.')
+      }
+    } catch (err) {
+      if (window.location.hostname.includes('localhost')) {
+        localStorage.setItem('matrix_master_key', masterKeyInput)
+        setIsUnlocked(true)
+      } else {
+        setKeyError('Erro de conexão ao verificar a chave.')
+      }
+    }
+  }
+
   // ── DATA PERSISTENCE & DERIVATION ──
-  const [eventOverrides, setEventOverrides] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('mc_eventOverrides') || '{}') } catch { return {} }
-  })
-  const [customEvents, setCustomEvents] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('mc_customEvents') || '[]') } catch { return [] }
-  })
+  const [isLoadingDB, setIsLoadingDB] = useState(true)
+  const [eventOverrides, setEventOverrides] = useState({})
+  const [customEvents, setCustomEvents] = useState([])
 
   // Derivação de Eventos (Deve vir antes do uso em outros componentes/states se possível)
   const mergedEvents = [...ALL_EVENTS, ...customEvents].map(ev => {
@@ -250,45 +283,23 @@ function App() {
     return { ...ev, ...ov }
   })
 
-  const [tasks, setTasks] = useState(() => {
-    try {
-      const s = localStorage.getItem('mc_tasks')
-      if (s) return JSON.parse(s)
-      return [
-        { id: 1, title: 'Reunião Comunidade Matrix', time: '14:00', type: 'work', done: false, note: '', date: null },
-        { id: 2, title: 'Análise de Métodos CPA', time: '16:30', type: 'matrix', done: false, note: 'Verificar relatório mensal', date: dateKey(today.getFullYear(), today.getMonth(), today.getDate()) },
-      ]
-    } catch { return [] }
-  })
+  const [tasks, setTasks] = useState([])
   const [showAddTask, setShowAddTask] = useState(false)
   const [showPastTasks, setShowPastTasks] = useState(false)
-  const [newTask, setNewTask] = useState({ title: '', time: '', type: 'work', note: '', date: '', endDate: '' })
+  const [newTask, setNewTask] = useState({ title: '', time: '', type: '1', note: '', date: '', endDate: '', alarmTime: '', alarmEnabled: false, recurrence: 'none' })
   const [editingNote, setEditingNote] = useState(null)
   const [viewMonth, setViewMonth] = useState(today.getMonth())
   const [viewYear, setViewYear] = useState(today.getFullYear())
   const [chatInput, setChatInput] = useState('')
-  const [messages, setMessages] = useState(() => {
-    try {
-      const s = localStorage.getItem('mc_oracle_chat')
-      return s ? JSON.parse(s) : []
-    } catch { return [] }
-  })
+  const [messages, setMessages] = useState([])
   const chatEndRef = useRef(null)
 
   // ── VOICE STATE ──
   const [isListening, setIsListening] = useState(false)
-  const [isVoiceEnabled, setIsVoiceEnabled] = useState(() => {
-    try { return localStorage.getItem('mc_voice_enabled') === 'true' } catch { return false }
-  })
-  const [selectedVoiceURI, setSelectedVoiceURI] = useState(() => {
-    try { return localStorage.getItem('mc_selected_voice') || 'female-pt' } catch { return 'female-pt' }
-  })
+  const [isVoiceEnabled, setIsVoiceEnabled] = useState(false)
+  const [selectedVoiceURI, setSelectedVoiceURI] = useState('female-pt')
   // Which TTS engine is currently active: 'native' | 'hf' | 'gemini' | 'none'
   const [voiceTier, setVoiceTier] = useState('none')
-
-  useEffect(() => { localStorage.setItem('mc_oracle_chat', JSON.stringify(messages)) }, [messages])
-  useEffect(() => { localStorage.setItem('mc_voice_enabled', isVoiceEnabled) }, [isVoiceEnabled])
-  useEffect(() => { if (selectedVoiceURI) localStorage.setItem('mc_selected_voice', selectedVoiceURI) }, [selectedVoiceURI])
 
 
   // ── COLOR CATEGORIES ──
@@ -299,30 +310,29 @@ function App() {
     { id: 4, name: 'Estudo', color: '#43A047' },
     { id: 5, name: 'Pessoal', color: '#AB47BC' },
   ]
-  const [colorCategories, setColorCategories] = useState(() => {
-    try { const s = localStorage.getItem('mc_colorCats'); return s ? JSON.parse(s) : defaultCats } catch { return defaultCats }
-  })
-  const [dayColors, setDayColors] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('mc_dayColors') || '{}') } catch { return {} }
-  })
+  const [colorCategories, setColorCategories] = useState(defaultCats)
+  const [dayColors, setDayColors] = useState({})
   const [showColorManager, setShowColorManager] = useState(false)
   const [newCatName, setNewCatName] = useState('')
   const [newCatColor, setNewCatColor] = useState('#E53935')
+
+  const getCategoryColor = (typeId) => {
+    if (typeId === 'work') return '#E53935';
+    if (typeId === 'matrix') return '#00FF41';
+    const cat = colorCategories.find(c => String(c.id) === String(typeId));
+    return cat ? cat.color : '#555';
+  };
 
   // ── SETTINGS FORM STATE ──
   const [newEv, setNewEv] = useState({ name: '', date: '', endDate: '', logo: '', emoji: '📅', category: 'Pessoal', borderColor: null, recurrence: 'none' })
   const [isMultiDay, setIsMultiDay] = useState(false)
   const [editingCustomId, setEditingCustomId] = useState(null)
   const [showAddEventInModal, setShowAddEventInModal] = useState(false)
-  const [activeAlarm, setActiveAlarm] = useState(null) // { id, title, type: 'task' | 'match', ... }
+  const [activeAlarm, setActiveAlarm] = useState(null)
   const [dismissedAlarms, setDismissedAlarms] = useState([])
-  const [snoozedAlarms, setSnoozedAlarms] = useState({}) // { id: snoozeUntilTimestamp }
-  const [eventBorderColor, setEventBorderColor] = useState(() => {
-    return localStorage.getItem('mc_eventBorderColor') || '#C41E3A'
-  })
-  const [customAlarmAudio, setCustomAlarmAudio] = useState(() => {
-    return localStorage.getItem('mc_customAlarmAudio') || null
-  })
+  const [snoozedAlarms, setSnoozedAlarms] = useState({})
+  const [eventBorderColor, setEventBorderColor] = useState('#C41E3A')
+  const [customAlarmAudio, setCustomAlarmAudio] = useState(null)
   const alarmAudioRef = useRef(null)
 
   function TournamentBadge({ tournament, size = 20 }) {
@@ -333,7 +343,62 @@ function App() {
     return null
   }
 
-  useEffect(() => { localStorage.setItem('mc_colorCats', JSON.stringify(colorCategories)) }, [colorCategories])
+  // ══ SUPABASE HYDRATION ══
+  useEffect(() => {
+    if (!isUnlocked) return;
+
+    const loadData = async () => {
+      setIsLoadingDB(true);
+      try {
+        const { data: settings } = await supabase.from('chronos_settings').select('*')
+        if (settings) {
+          const prefs = {}
+          settings.forEach(s => {
+            if (s.key === 'mc_eventBorderColor') setEventBorderColor(s.value)
+            else if (s.key === 'mc_customAlarmAudio') setCustomAlarmAudio(s.value || null)
+            else if (s.key === 'mc_voice_enabled') setIsVoiceEnabled(s.value === 'true')
+            else if (s.key === 'mc_selected_voice') setSelectedVoiceURI(s.value)
+            else if (s.key.startsWith('mc_pref_')) {
+              prefs[s.key.replace('mc_pref_', '')] = s.value
+            }
+          })
+          setUserPreferences(prefs)
+        }
+
+        const { data: cats } = await supabase.from('chronos_color_categories').select('*')
+        if (cats && cats.length > 0) setColorCategories(cats)
+
+        const { data: dColors } = await supabase.from('chronos_day_colors').select('*')
+        if (dColors) {
+          const dc = {}
+          dColors.forEach(d => dc[d.date_key] = d.cat_id)
+          setDayColors(dc)
+        }
+
+        const { data: eOver } = await supabase.from('chronos_event_overrides').select('*')
+        if (eOver) {
+          const eo = {}
+          eOver.forEach(o => eo[o.id] = { name: o.name, borderColor: o.border_color, customLogo: o.custom_logo })
+          setEventOverrides(eo)
+        }
+
+        const { data: customData } = await supabase.from('chronos_custom_events').select('*')
+        if (customData) setCustomEvents(customData.map(c => ({ ...c, endDate: c.end_date, borderColor: c.border_color })))
+
+        const { data: tData } = await supabase.from('chronos_tasks').select('*')
+        if (tData) setTasks(tData.map(t => ({ ...t, endDate: t.end_date, alarmTime: t.alarm_time, alarmEnabled: t.alarm_enabled, recurrence: t.recurrence || 'none' })))
+
+        const { data: chatData } = await supabase.from('chronos_chat_history').select('*').order('created_at', { ascending: true })
+        if (chatData) setMessages(chatData)
+
+      } catch (err) {
+        console.error("DB error:", err)
+      } finally {
+        setIsLoadingDB(false);
+      }
+    };
+    loadData();
+  }, [isUnlocked])
 
   // ── ALARM SYSTEM CHECK ──
   useEffect(() => {
@@ -387,13 +452,16 @@ function App() {
       const currentTimeStr = `${h}:${m}`;
       const dk = dateKey(now.getFullYear(), now.getMonth(), now.getDate());
 
-      // 1. Check Tasks (Exact Timestamp)
-      const pendingTasks = tasks.filter(t => !t.done && t.date === dk && t.time === currentTimeStr);
+      // 1. Check Tasks (Exact Timestamp or Alarm Time)
+      const pendingTasks = tasks.filter(t => !t.done && t.date === dk && ((!t.alarmEnabled && t.time === currentTimeStr) || (t.alarmEnabled && t.alarmTime === currentTimeStr)));
       for (const t of pendingTasks) {
         if (dismissedAlarms.includes(`task-${t.id}`)) continue;
         if (snoozedAlarms[`task-${t.id}`] && now.getTime() < snoozedAlarms[`task-${t.id}`]) continue;
 
-        setActiveAlarm({ id: `task-${t.id}`, type: 'task', title: t.title, time: t.time, originalId: t.id });
+        if ('Notification' in window && Notification.permission === 'granted' && !activeAlarm) {
+          new Notification(`Alarme: ${t.title}`, { body: `Horário: ${t.alarmEnabled ? t.alarmTime : t.time}`, icon: '/favicon.ico' });
+        }
+        setActiveAlarm({ id: `task-${t.id}`, type: 'task', title: t.title, time: t.alarmEnabled ? t.alarmTime : t.time, originalId: t.id });
         return; // Trigger one at a time
       }
 
@@ -439,85 +507,184 @@ function App() {
     return () => clearInterval(timer)
   }, [tasks, dismissedAlarms, snoozedAlarms, activeAlarm])
 
-  useEffect(() => { localStorage.setItem('mc_dayColors', JSON.stringify(dayColors)) }, [dayColors])
-  useEffect(() => { localStorage.setItem('mc_customAlarmAudio', customAlarmAudio || '') }, [customAlarmAudio])
-  useEffect(() => { localStorage.setItem('mc_eventOverrides', JSON.stringify(eventOverrides)) }, [eventOverrides])
-  useEffect(() => { localStorage.setItem('mc_customEvents', JSON.stringify(customEvents)) }, [customEvents])
-  useEffect(() => { localStorage.setItem('mc_eventBorderColor', eventBorderColor) }, [eventBorderColor])
-  useEffect(() => { localStorage.setItem('mc_tasks', JSON.stringify(tasks)) }, [tasks])
+  // ── SETTINGS AUTO-SYNC (Generic Defaults) ──
+  useEffect(() => {
+    if (isLoadingDB || !isUnlocked) return;
+    supabase.from('chronos_settings').upsert({ key: 'mc_voice_enabled', value: String(isVoiceEnabled) }).then()
+  }, [isVoiceEnabled, isLoadingDB, isUnlocked])
 
+  useEffect(() => {
+    if (isLoadingDB || !isUnlocked || !selectedVoiceURI) return;
+    supabase.from('chronos_settings').upsert({ key: 'mc_selected_voice', value: selectedVoiceURI }).then()
+  }, [selectedVoiceURI, isLoadingDB, isUnlocked])
 
+  useEffect(() => {
+    if (isLoadingDB || !isUnlocked) return;
+    supabase.from('chronos_settings').upsert({ key: 'mc_eventBorderColor', value: eventBorderColor }).then()
+  }, [eventBorderColor, isLoadingDB, isUnlocked])
 
-  const assignDayColor = (dk, catId) => setDayColors(prev => catId ? { ...prev, [dk]: catId } : (() => { const n = { ...prev }; delete n[dk]; return n })())
-  const addCategory = () => { if (!newCatName.trim()) return; setColorCategories(prev => [...prev, { id: Date.now(), name: newCatName, color: newCatColor }]); setNewCatName(''); setNewCatColor('#E53935') }
-  const deleteCategory = (id) => { setColorCategories(prev => prev.filter(c => c.id !== id)); setDayColors(prev => { const n = { ...prev }; Object.keys(n).forEach(k => { if (n[k] === id) delete n[k] }); return n }) }
+  useEffect(() => {
+    if (isLoadingDB || !isUnlocked) return;
+    supabase.from('chronos_settings').upsert({ key: 'mc_customAlarmAudio', value: customAlarmAudio || '' }).then()
+  }, [customAlarmAudio, isLoadingDB, isUnlocked])
+
+  const assignDayColor = (dk, catId) => setDayColors(prev => {
+    if (catId) {
+      if (isUnlocked) supabase.from('chronos_day_colors').upsert({ date_key: dk, cat_id: catId }).then()
+      return { ...prev, [dk]: catId }
+    } else {
+      const n = { ...prev }; delete n[dk];
+      if (isUnlocked) supabase.from('chronos_day_colors').delete().eq('date_key', dk).then()
+      return n
+    }
+  })
+
+  const addCategory = () => {
+    if (!newCatName.trim()) return;
+    const id = Date.now();
+    setColorCategories(prev => [...prev, { id, name: newCatName, color: newCatColor }]);
+    if (isUnlocked) supabase.from('chronos_color_categories').insert({ id, name: newCatName, color: newCatColor }).then()
+    setNewCatName('');
+    setNewCatColor('#E53935')
+  }
+
+  const deleteCategory = (id) => {
+    setColorCategories(prev => prev.filter(c => c.id !== id));
+    setDayColors(prev => {
+      const n = { ...prev };
+      Object.keys(n).forEach(k => {
+        if (n[k] === id) {
+          delete n[k]
+          if (isUnlocked) supabase.from('chronos_day_colors').delete().eq('date_key', k).then()
+        }
+      });
+      return n
+    })
+    if (isUnlocked) supabase.from('chronos_color_categories').delete().eq('id', id).then()
+  }
+
   const getCategoryForDay = (dk) => colorCategories.find(c => c.id === dayColors[dk])
 
   // Helpers para Eventos
-  const updateEventOverride = (id, data) => setEventOverrides(p => ({ ...p, [id]: { ...(p[id] || {}), ...data } }))
-  const addCustomEvent = (ev) => setCustomEvents(p => [...p, { ...ev, id: `custom-${Date.now()}` }])
-  const deleteCustomEvent = (id) => setCustomEvents(p => p.filter(ev => ev.id !== id))
-  const resetEventOverride = (id) => setEventOverrides(p => { const n = { ...p }; delete n[id]; return n })
+  const updateEventOverride = (id, data) => setEventOverrides(p => {
+    const mapped = { ...(p[id] || {}), ...data }
+    if (isUnlocked) supabase.from('chronos_event_overrides').upsert({ id, name: mapped.name, border_color: mapped.borderColor, custom_logo: mapped.customLogo }).then()
+    return ({ ...p, [id]: mapped })
+  })
+
+  const addCustomEvent = (ev) => {
+    const id = `custom-${Date.now()}`
+    const newEvent = { ...ev, id }
+    setCustomEvents(p => [...p, newEvent])
+    if (isUnlocked) supabase.from('chronos_custom_events').insert({
+      id, name: ev.name, date: ev.date, end_date: ev.endDate, logo: ev.logo, emoji: ev.emoji, category: ev.category, border_color: ev.borderColor, recurrence: ev.recurrence, description: ev.description, details: ev.details
+    }).then()
+  }
+
+  const deleteCustomEvent = (id) => {
+    setCustomEvents(p => p.filter(ev => ev.id !== id))
+    if (isUnlocked) supabase.from('chronos_custom_events').delete().eq('id', id).then()
+  }
+
+  const resetEventOverride = (id) => setEventOverrides(p => {
+    const n = { ...p }; delete n[id];
+    if (isUnlocked) supabase.from('chronos_event_overrides').delete().eq('id', id).then()
+    return n
+  })
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
+  const [hasShownWelcome, setHasShownWelcome] = useState(false);
   useEffect(() => {
-    const dk = dateKey(today.getFullYear(), today.getMonth(), today.getDate())
-    const todaysTasks = getTasksForDate(dk)
-    const todaysEvents = getEventsForDay(today.getFullYear(), today.getMonth(), today.getDate(), mergedEvents)
-    const favEvts = mergedEvents.filter(e => favoriteIds.includes(e.id))
+    if (isLoadingDB || !isUnlocked || hasShownWelcome || messages.length > 0) return;
+    setHasShownWelcome(true);
 
-    let summaryLines = []
-    if (todaysTasks.length > 0) {
-      summaryLines.push(`📋 Tarefas de hoje (${todaysTasks.length}):\n${todaysTasks.map(t => `  - ${t.title} (${t.time})`).join('\n')}`)
-    } else {
-      summaryLines.push('📋 Nenhuma tarefa pendente para hoje.')
-    }
+    const generateBriefing = async () => {
+      setIsThinking(true);
+      const initialTextSetup = `Sistemas Online, Neo.\n\nSincronizando Consciência com a Nuvem e analisando os dados em tempo real...`;
+      setMessages([{ role: 'ai', text: initialTextSetup }]);
 
-    if (todaysEvents.length > 0) {
-      summaryLines.push(`📢 Eventos de hoje:\n${todaysEvents.map(e => `  - ${e.name}`).join('\n')}`)
-    }
+      try {
+        const systemPrompt = "INSTRUÇÃO RESTRITA DO SISTEMA: Inicie o dia gerando um Briefing incrivelmente coloquial, bem-humorado e extrovertido. Regras:\n1. Olhe os 'userPreferences' no estado. Se houver algum interesse lá (ex: esportes, comida, jogos), use a ferramenta `search_web_for_info` escondida para buscar uma novidade sobre esse assunto AGORA.\n2. Dê um 'bom dia/tarde' muito animado, chame de Neo e cite a novidade que encontrou de forma casual para puxar assunto.\n3. Faça um resumo *super* rápido de se há tarefas ou eventos hoje.\n4. Termine fazendo uma pergunta engajadora e deixando a conversa aberta (ex: 'Quer focar nisso agora ou prefere x?').";
 
-    const upcomingFavs = favEvts.map(e => {
-      const d = daysUntil(e.date);
-      return d > 0 ? `• ${e.name}: faltam ${d} dias` : d === 0 ? `• ${e.name}: É HOJE! 🎉` : null
-    }).filter(Boolean)
-    if (upcomingFavs.length > 0) {
-      summaryLines.push(`⭐ Favoritos Próximos:\n${upcomingFavs.join('\n')}`)
-    }
+        const context = { tasks, customEvents, colorCategories, dayColors, userPreferences };
+        // Clean proxy history so it doesn't get messed up
+        const { text } = await chatWithOracle(systemPrompt, context, []);
 
-    let contextualSuggestion = "";
-    if (todaysTasks.length === 0) {
-      contextualSuggestion = "💡 Sugestão da Oráculo: Sua agenda de hoje está como uma página em branco. Gostaria de começar definindo suas prioridades e adicionando as primeiras tarefas?";
-    } else {
-      contextualSuggestion = "💡 Sugestão da Oráculo: Analisei suas tarefas e recomendo focar na prioridade máxima logo pela manhã para otimizar seus ciclos de consciência.";
-    }
-
-    const initialText = `Sistemas Online, Neo.\n\nSou A Oráculo, sua secretária pessoal. Status da Matrix: Operacional.\n\n--- 📅 AGENDA DE HOJE ---\n\n${summaryLines.join('\n\n')}\n\n------------------------\n\n${contextualSuggestion}\n\nComo sua guia de rotina, estou pronta para auxiliar na organização dos seus próximos passos.`
-
-    setMessages([{ role: 'ai', text: initialText }])
-  }, [])
+        if (text) {
+          setMessages([{ role: 'ai', text }]);
+          supabase.from('chronos_chat_history').insert({ role: 'ai', text }).then()
+        }
+      } catch (err) {
+        const fallback = "Sistemas Online, Neo. A Oráculo está conectada e os protocolos foram estabilizados. Pronta para os comandos.";
+        setMessages([{ role: 'ai', text: fallback }]);
+      } finally {
+        setIsThinking(false);
+      }
+    };
+    generateBriefing();
+  }, [isLoadingDB, isUnlocked, messages.length, hasShownWelcome, tasks, mergedEvents, favoriteIds, userPreferences])
 
   const toggleFavorite = (id) => setFavoriteIds(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id])
-  const toggleTask = (id) => setTasks(tasks.map(t => t.id === id ? { ...t, done: !t.done } : t))
-  const deleteTask = (id) => setTasks(tasks.filter(t => t.id !== id))
-  const updateNote = (id, note) => setTasks(tasks.map(t => t.id === id ? { ...t, note } : t))
+
+  const toggleTask = (id) => setTasks(tasks.map(t => {
+    if (t.id === id) {
+      const nextState = !t.done
+      if (isUnlocked) supabase.from('chronos_tasks').update({ done: nextState }).eq('id', id).then()
+      return { ...t, done: nextState }
+    }
+    return t
+  }))
+
+  const deleteTask = (id) => {
+    setTasks(tasks.filter(t => t.id !== id))
+    if (isUnlocked) supabase.from('chronos_tasks').delete().eq('id', id).then()
+  }
+
+  const updateNote = (id, note) => setTasks(tasks.map(t => {
+    if (t.id === id) {
+      if (isUnlocked) supabase.from('chronos_tasks').update({ note }).eq('id', id).then()
+      return { ...t, note }
+    }
+    return t
+  }))
 
   const handleAddTask = (e) => {
     e.preventDefault()
     if (!newTask.title || !newTask.time) return
-    setTasks([...tasks, { ...newTask, id: Date.now(), done: false }])
-    setNewTask({ title: '', time: '', type: 'work', note: '', date: '', endDate: '' })
+    const id = Date.now()
+    const t = { ...newTask, id, done: false }
+    setTasks([...tasks, t])
+    setNewTask({ title: '', time: '', type: colorCategories[0]?.id?.toString() || '1', note: '', date: '', endDate: '', alarmTime: '', alarmEnabled: false, recurrence: 'none' })
     setShowAddTask(false)
+    if (isUnlocked) {
+      supabase.from('chronos_tasks').insert({
+        id: t.id, title: t.title, time: t.time, type: t.type, done: t.done,
+        note: t.note, date: t.date, end_date: t.endDate, alarm_time: t.alarmTime, alarm_enabled: t.alarmEnabled, recurrence: t.recurrence
+      }).then()
+    }
   }
 
   const getTasksForDate = (dk) => {
     const checkDate = new Date(dk + 'T00:00:00')
+    const dayOfWeek = checkDate.getDay() // 0 = sun, 1 = mon
+    const dayOfMonth = checkDate.getDate()
+
     return tasks.filter(t => {
-      if (!t.date) return false
-      const start = new Date(t.date + 'T00:00:00')
-      const end = t.endDate ? new Date(t.endDate + 'T00:00:00') : start
-      return checkDate >= start && checkDate <= end
+      if (!t.date && t.recurrence === 'none') return false
+
+      let isRecurrentMatch = false;
+      if (t.recurrence === 'daily') isRecurrentMatch = true;
+      if (t.recurrence === 'weekly') isRecurrentMatch = (new Date(t.date + 'T00:00:00').getDay() === dayOfWeek);
+      if (t.recurrence === 'monthly') isRecurrentMatch = (new Date(t.date + 'T00:00:00').getDate() === dayOfMonth);
+      if (t.recurrence === 'weekdays' && dayOfWeek >= 1 && dayOfWeek <= 5) isRecurrentMatch = true;
+      if (t.recurrence === 'weekends' && (dayOfWeek === 0 || dayOfWeek === 6)) isRecurrentMatch = true;
+
+      const start = t.date ? new Date(t.date + 'T00:00:00') : new Date('2020-01-01');
+      const end = t.endDate ? new Date(t.endDate + 'T00:00:00') : (isRecurrentMatch ? new Date('2099-01-01') : start);
+
+      // If it passes boundaries and matches recurrence OR falls exactly inside bounds
+      return checkDate >= start && checkDate <= end && (isRecurrentMatch || (!isRecurrentMatch && t.recurrence === 'none'));
     })
   }
 
@@ -556,7 +723,10 @@ function App() {
         const lang = selectedVoiceURI === 'en-aria' ? 'eng' : 'por';
         const res = await fetch('/api/tts', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('matrix_master_key')}`
+          },
           body: JSON.stringify({ text: cleanText, lang }),
         });
         if (res.ok) {
@@ -584,7 +754,10 @@ function App() {
         // Call server-side proxy (no CORS, no key exposure)
         const res = await fetch('/api/gemini-tts', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('matrix_master_key')}`
+          },
           body: JSON.stringify({ text: cleanText, voiceName }),
         });
         if (!res.ok) throw new Error(`Gemini proxy error: ${res.status}`);
@@ -685,7 +858,7 @@ function App() {
     setIsThinking(true)
 
     try {
-      const context = { tasks, customEvents, colorCategories, dayColors }
+      const context = { tasks, customEvents, colorCategories, dayColors, userPreferences }
       const { text, functionCalls } = await chatWithOracle(userText, context, messages)
 
       if (functionCalls) {
@@ -708,6 +881,14 @@ function App() {
             setCustomEvents(prev => [...prev, { id: `custom-${Date.now()}`, name: args.name, date: args.date, endDate: args.endDate, category: args.category || 'Pessoal', borderColor: args.borderColor, details: [] }])
           } else if (name === 'set_day_color') {
             setDayColors(prev => ({ ...prev, [args.date]: args.categoryId }))
+          } else if (name === 'change_page') {
+            setPage(args.page)
+          } else if (name === 'update_user_preferences') {
+            setUserPreferences(prev => {
+              const next = { ...prev, [args.key]: args.value }
+              if (isUnlocked) supabase.from('chronos_settings').upsert({ key: `mc_pref_${args.key}`, value: args.value }).then()
+              return next;
+            })
           }
         })
       }
@@ -717,11 +898,13 @@ function App() {
       speak(replyText);
 
     } catch (err) {
-      console.error("Erro na comunicação com a Oráculo:", err)
       let errorMsg = `Houve uma interferência na Matrix: ${err.message || "Erro desconhecido"}`
 
-      if (err.message?.includes("API_KEY_INVALID")) errorMsg = "Erro: Chave API inválida. Verifique o .env."
-      if (err.message?.includes("QUOTA_EXCEEDED")) errorMsg = "Erro: Limite de uso excedido."
+      if (err.message?.includes("API_KEY_INVALID")) {
+        errorMsg = "Erro: Chave API inválida. Verifique o .env."
+      } else if (err.message?.includes("QUOTA_EXCEEDED") || err.message?.includes("429") || err.message?.includes("quota")) {
+        errorMsg = "Ah, Neo... parece que nós esbarramos no limite de largura de banda da rede externa (Cota da API excedida). Respire um pouco, tome uma água e a gente tenta de novo daqui a pouco, beleza?"
+      }
 
       setMessages(prev => [...prev, { role: 'ai', text: errorMsg }])
     } finally {
@@ -741,7 +924,7 @@ function App() {
     const dayTasks = getTasksForDate(dk)
 
     return (
-      <div className="modal-overlay" onClick={() => setSelectedDay(null)}>
+      <div className="modal-overlay" onClick={() => { setSelectedDay(null); setShowAddEventInModal(false); }}>
         <div className="modal-content glass-card" onClick={e => e.stopPropagation()}>
           <div className="modal-header">
             <h2>{day} de {MONTH_NAMES[month]} de {year}</h2>
@@ -929,6 +1112,39 @@ function App() {
   }
 
   // ══ MAIN SHELL ══
+  if (!isUnlocked) {
+    return (
+      <div className="matrix-lockscreen">
+        <div className="lock-card glass-card">
+          <h1 className="matrix-glow" style={{ fontSize: '2.5rem', marginBottom: '20px' }}>MATRIX CHRONOS</h1>
+          <p style={{ color: '#a0a0a0', marginBottom: '30px' }}>Acesso Restrito. Insira a Chave Mestra para acessar as funcionalidades de IA.</p>
+          <form onSubmit={handleUnlock}>
+            <input
+              type="password"
+              placeholder="Chave Mestra"
+              value={masterKeyInput}
+              onChange={e => setMasterKeyInput(e.target.value)}
+              className="lock-input"
+            />
+            {keyError && <p style={{ color: '#E53935', marginTop: '10px' }}>{keyError}</p>}
+            <button type="submit" className="lock-btn">CONECTAR</button>
+          </form>
+        </div>
+      </div>
+    )
+  }
+
+  if (isLoadingDB) {
+    return (
+      <div className="matrix-lockscreen">
+        <div className="lock-card glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <h1 className="matrix-glow" style={{ fontSize: '2.5rem', marginBottom: '20px' }}>MATRIX CHRONOS</h1>
+          <p style={{ color: '#00ff41', textAlign: 'center' }}>Sincronizando Consciência com a Nuvem... ⏳</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="app-shell">
       {activeAlarm && (
@@ -1325,8 +1541,49 @@ function App() {
                     <label>Fim (Opcional)</label>
                     <input type="date" value={newTask.endDate} onChange={e => setNewTask({ ...newTask, endDate: e.target.value })} />
                   </div>
+                  <div className="field" style={{ gridColumn: 'span 2' }}>
+                    <label>Rotina (Recorrência)</label>
+                    <select value={newTask.recurrence} onChange={e => setNewTask({ ...newTask, recurrence: e.target.value })} style={{ width: '100%' }}>
+                      <option value="none">Apenas no período acima</option>
+                      <option value="daily">Todos os dias</option>
+                      <option value="weekdays">Dias de semana (Seg-Sex)</option>
+                      <option value="weekends">Apenas Finais de Semana</option>
+                      <option value="weekly">Semanalmente (no mesmo dia da semana)</option>
+                      <option value="monthly">Mensalmente (neste exato dia do mês)</option>
+                    </select>
+                  </div>
                 </div>
-                <select value={newTask.type} onChange={e => setNewTask({ ...newTask, type: e.target.value })}><option value="work">Trabalho</option><option value="matrix">Matrix</option></select>
+                <div className="form-alarm-group field" style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '10px', margin: '10px 0' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={newTask.alarmEnabled} onChange={e => {
+                      if (e.target.checked && 'Notification' in window && Notification.permission !== "granted") {
+                        Notification.requestPermission();
+                      }
+                      setNewTask({ ...newTask, alarmEnabled: e.target.checked });
+                    }} style={{ width: '16px', height: '16px' }} />
+                    Ativar Alarme
+                  </label>
+                  {newTask.alarmEnabled && (
+                    <input type="time" value={newTask.alarmTime} onChange={e => setNewTask({ ...newTask, alarmTime: e.target.value })} required style={{ flex: 1, padding: '0.4rem', borderRadius: '4px', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.2)', color: 'var(--text-primary)' }} />
+                  )}
+                </div>
+                <div className="category-pills">
+                  {colorCategories.map(c => (
+                    <button
+                      type="button"
+                      key={c.id}
+                      className={`cat-pill ${newTask.type == c.id ? 'active' : ''}`}
+                      style={{
+                        backgroundColor: newTask.type == c.id ? `${c.color}20` : 'transparent',
+                        borderColor: newTask.type == c.id ? c.color : 'var(--glass-border)',
+                        color: newTask.type == c.id ? c.color : 'var(--text-secondary)'
+                      }}
+                      onClick={() => setNewTask({ ...newTask, type: c.id?.toString() })}
+                    >
+                      {c.name}
+                    </button>
+                  ))}
+                </div>
                 <input type="text" placeholder="Nota (opcional)" value={newTask.note} onChange={e => setNewTask({ ...newTask, note: e.target.value })} className="note-input" />
                 <button type="submit">Adicionar</button>
               </form>
@@ -1335,16 +1592,26 @@ function App() {
               {tasks.filter(t => showPastTasks ? t.done : !t.done).map(t => (
                 <div key={t.id} className={`task-row glass-card ${t.done ? 'done' : ''}`}>
                   <button className="check-btn" onClick={() => toggleTask(t.id)}>{t.done ? '✅' : '⬜'}</button>
-                  <div className={`task-type-dot ${t.type}`}></div>
+                  <div className="task-type-dot" style={{ backgroundColor: getCategoryColor(t.type), boxShadow: `0 0 6px ${getCategoryColor(t.type)}50` }}></div>
                   <div className="task-row-info">
                     <div className="task-row-main">
                       <span className="task-title">{t.title}</span>
                       <span className="task-meta">
                         <span className="task-time">⏰ {t.time}</span>
-                        {t.date && (
+                        {t.date && t.recurrence === 'none' && (
                           <span className="task-date">
                             📅 {t.date.split('-').reverse().join('/')}
                             {t.endDate && ` a ${t.endDate.split('-').reverse().join('/')}`}
+                          </span>
+                        )}
+                        {t.recurrence !== 'none' && (
+                          <span className="task-recurrence" style={{ marginLeft: '8px', color: 'var(--accent)' }}>
+                            🔁 {t.recurrence === 'daily' ? 'Diário' : t.recurrence === 'weekly' ? 'Semanal' : t.recurrence === 'monthly' ? 'Mensal' : t.recurrence === 'weekdays' ? 'Dias de Semana' : 'Finais de Semana'}
+                          </span>
+                        )}
+                        {t.alarmEnabled && (
+                          <span className="task-alarm" title={`Alarme configurado para as ${t.alarmTime}`} style={{ marginLeft: '8px', color: '#FDD835' }}>
+                            🔔 {t.alarmTime}
                           </span>
                         )}
                       </span>

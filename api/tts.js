@@ -11,6 +11,11 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'Missing or invalid text parameter' });
     }
 
+    const authHeader = req.headers.authorization;
+    if (!authHeader || authHeader !== `Bearer ${process.env.MATRIX_MASTER_KEY}`) {
+        return res.status(401).json({ error: 'Unauthorized. Invalid or missing Master Key.' });
+    }
+
     const apiKey = process.env.VITE_HF_API_KEY;
     if (!apiKey) {
         return res.status(503).json({ error: 'HuggingFace key not configured — use Gemini fallback' });
